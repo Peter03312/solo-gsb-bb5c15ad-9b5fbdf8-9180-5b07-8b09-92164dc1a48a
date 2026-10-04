@@ -63,6 +63,7 @@
                 <label>计划开始 <input name="plannedStartText" type="time" required /></label>
                 <label>时长(分钟) <input name="duration" type="number" min="1" step="1" required /></label>
               </div>
+              <label class="release-check"><input type="checkbox" name="needsRelease" /> 需放行（须执行人「签认就绪」+ 舞监「签认可执行」齐备后才能登记实际开始；标记随发布冻结）</label>
               <div class="form-actions">
                 <button type="submit" class="primary" id="cue-submit">新增</button>
                 <button type="button" id="cue-cancel" class="ghost" hidden>取消编辑</button>
@@ -87,7 +88,7 @@
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>编号</th><th>说明</th><th>岗位</th><th>计划开始</th><th>时长</th><th>计划结束</th><th>前置</th><th>操作</th></tr>
+                <tr><th>编号</th><th>说明</th><th>岗位</th><th>计划开始</th><th>时长</th><th>计划结束</th><th>需放行</th><th>前置</th><th>操作</th></tr>
               </thead>
               <tbody id="draft-cue-tbody"></tbody>
             </table>
@@ -161,7 +162,7 @@
               <thead>
                 <tr>
                   <th>编号</th><th>说明</th><th>岗位</th><th>计划</th>
-                  <th>重算开始</th><th>重算结束</th><th>状态</th><th>实际开始</th><th>实际完成</th><th>预计结束</th><th id="live-col-reg">岗位登记</th>
+                  <th>重算开始</th><th>重算结束</th><th>状态</th><th>放行签认</th><th>实际开始</th><th>实际完成</th><th>预计结束</th><th id="live-col-reg">岗位登记</th>
                 </tr>
               </thead>
               <tbody id="live-tbody"></tbody>
@@ -182,6 +183,11 @@
             链中任一项已有实际开始/完成（或预览后登记行变化）将整体拒绝、不留部分标记；首次跳过清除预计结束、保留已发布计划并记录操作者与时间；
             已跳过项只展示、不重复留痕，执行账号不得再登记，舞监不得更正其时间。跳过项不计入待执行时段与岗位冲突；
             仅当前执行版可操作，新发布版不继承跳过状态，旧版回看可见原因。
+          </p>
+          <p class="muted">
+            标记「需放行」的提示项须<strong>双人放行</strong>：当班执行人「签认就绪」+ 舞监「签认可执行」两类有效签认齐备后，岗位才能登记实际开始（预计结束与完成登记不受影响）。
+            每次签认记录签认人、时间及目标与直接前置项的登记行版本；目标或任一直接前置项的登记行变化、代班变更导致签认人失去登记权，都会使旧签认失效（需重新签认）。
+            签认状态与失效原因显示在「放行签认」列；新发布版不继承签认，历史版本可只读回看签认记录。
           </p>
         </div>
       </div>

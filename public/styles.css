@@ -178,3 +178,14 @@ tr.wi-assumed-row td { border-left: 3px solid #2f6fed; }
 .wi-removed-box ul { margin: 6px 0 0; padding-left: 18px; }
 .wi-kept-box { background: #fdf3e7; border: 1px solid #f0cf9f; color: #8a5a00; border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
 .wi-kept-box ul { margin: 6px 0 0; padding-left: 18px; }
+
+/* 双人放行签认 */
+.release-tag { display: inline-block; margin-top: 2px; font-size: 11px; color: #8a5a00; background: #fdf3e7; border: 1px solid #f0cf9f; border-radius: 6px; padding: 0 6px; white-space: nowrap; }
+.release-check { flex-direction: row !important; align-items: center; gap: 6px !important; font-size: 12px !important; color: #556 !important; }
+.signoff-cell { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; white-space: normal; min-width: 170px; }
+.signoff-slot { font-size: 12px; line-height: 1.5; }
+.signoff-missing { color: #98a1ad; }
+.signoff-valid { color: #1d7a43; font-weight: 600; }
+.signoff-invalid { color: #b3541e; font-weight: 600; }
+.signoff-reason { white-space: normal; max-width: 220px; }
+.signoff-ready { font-size: 12px; color: #1d7a43; background: #e2f5e9; border-radius: 6px; padding: 1px 8px; }

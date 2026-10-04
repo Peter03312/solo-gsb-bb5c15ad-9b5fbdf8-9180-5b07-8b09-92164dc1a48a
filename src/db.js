@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS draft_cues (
   position   TEXT NOT NULL,
   planned_start INTEGER NOT NULL,   -- 当日 00:00 起的分钟数
   duration   INTEGER NOT NULL,      -- 分钟
+  needs_release INTEGER NOT NULL DEFAULT 0, -- 1：需放行（双人签认后才能登记实际开始）
   row_ver    INTEGER NOT NULL DEFAULT 1,
   UNIQUE(code)
 );
@@ -65,6 +66,7 @@ CREATE TABLE IF NOT EXISTS published_cues (
   position        TEXT NOT NULL,
   planned_start   INTEGER NOT NULL,
   duration        INTEGER NOT NULL,
+  needs_release   INTEGER NOT NULL DEFAULT 0, -- 发布时自草稿冻结：1 需放行
   UNIQUE(version_id, cue_ref)
 );
 
@@ -136,11 +138,39 @@ CREATE TABLE IF NOT EXISTS position_deputies (
   revoked_at     TEXT
 );
 
+-- 双人放行签认：需放行提示项须「执行人签认就绪 + 舞监签认可执行」两类有效签认齐备才能登记实际开始。
+-- 每次签认记录签认人、时间、目标登记行版本与直接前置项登记行版本快照（关联表）；
+-- 目标或任一直接前置项登记行变化、代班变更导致签认人失去登记权时，签认置为失效（active=0，保留记录供回看）。
+CREATE TABLE IF NOT EXISTS release_signoffs (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_id     INTEGER NOT NULL REFERENCES rehearsal_versions(id) ON DELETE CASCADE,
+  cue_ref        INTEGER NOT NULL,          -- 目标提示项引用
+  kind           TEXT NOT NULL CHECK (kind IN ('operator', 'sm')), -- operator 执行人就绪 / sm 舞监可执行
+  signer_user_id INTEGER NOT NULL,
+  signer_username     TEXT NOT NULL,   -- 冗余保存账号与姓名，账号后续变化不影响历史展示
+  signer_display_name TEXT NOT NULL,
+  signed_at      TEXT NOT NULL,
+  target_row_ver INTEGER NOT NULL,      -- 签认时目标登记行版本
+  active         INTEGER NOT NULL DEFAULT 1,  -- 1 有效；0 已失效
+  invalidated_reason TEXT,              -- 失效原因（登记行变化 / 代班变更）
+  invalidated_at TEXT
+);
+
+-- 签认时直接前置项登记行版本快照（任一变化即失效）
+CREATE TABLE IF NOT EXISTS release_signoff_preds (
+  signoff_id  INTEGER NOT NULL REFERENCES release_signoffs(id) ON DELETE CASCADE,
+  cue_ref     INTEGER NOT NULL,          -- 直接前置提示项引用
+  row_ver     INTEGER NOT NULL           -- 签认时该前置的登记行版本
+);
+
 CREATE INDEX IF NOT EXISTS idx_pcues_version ON published_cues(version_id);
 CREATE INDEX IF NOT EXISTS idx_reg_version ON registrations(version_id);
 CREATE INDEX IF NOT EXISTS idx_corr_version ON registration_corrections(version_id);
 CREATE INDEX IF NOT EXISTS idx_deputies_version ON position_deputies(version_id);
 CREATE INDEX IF NOT EXISTS idx_skips_version ON registration_skips(version_id);
+CREATE INDEX IF NOT EXISTS idx_signoffs_version ON release_signoffs(version_id);
+CREATE INDEX IF NOT EXISTS idx_signoff_preds_signoff ON release_signoff_preds(signoff_id);
+CREATE INDEX IF NOT EXISTS idx_signoff_preds_cue ON release_signoff_preds(cue_ref);
 -- 每个版本每个岗位至多一名在任代班（部分唯一索引）
 CREATE UNIQUE INDEX IF NOT EXISTS idx_deputies_active
   ON position_deputies(version_id, position) WHERE active = 1;
@@ -157,6 +187,10 @@ ensureColumn('registrations', 'source_cue_ref',
   'ALTER TABLE registrations ADD COLUMN source_cue_ref INTEGER');
 ensureColumn('registrations', 'skipped',
   'ALTER TABLE registrations ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0');
+ensureColumn('draft_cues', 'needs_release',
+  'ALTER TABLE draft_cues ADD COLUMN needs_release INTEGER NOT NULL DEFAULT 0');
+ensureColumn('published_cues', 'needs_release',
+  'ALTER TABLE published_cues ADD COLUMN needs_release INTEGER NOT NULL DEFAULT 0');
 
 function getMeta(key, fallback = null) {
   const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(key);
