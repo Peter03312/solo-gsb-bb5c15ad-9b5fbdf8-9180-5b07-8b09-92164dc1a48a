@@ -15,11 +15,12 @@ const DEFAULT_USERS = [
 const SEED_POSITIONS = ['灯光', '音响', '道具'];
 
 // 可直接发布的示例联排计划（依赖关系满足顺序，同岗位互不重叠）
+// L2 标记「需放行」：演示双人放行（开始前须执行人就绪 + 舞监可执行两类签认齐备）
 const SEED_CUES = [
   { code: 'L1', title: '开场灯光就位', position: '灯光', start: '19:00', duration: 5 },
   { code: 'S1', title: '开场音乐', position: '音响', start: '19:05', duration: 3, deps: ['L1'] },
   { code: 'P1', title: '一桌二椅', position: '道具', start: '19:05', duration: 6, deps: ['L1'] },
-  { code: 'L2', title: '追光主角上场', position: '灯光', start: '19:10', duration: 8, deps: ['S1'] },
+  { code: 'L2', title: '追光主角上场', position: '灯光', start: '19:10', duration: 8, deps: ['S1'], needsRelease: true },
   { code: 'S2', title: '风声效果', position: '音响', start: '19:12', duration: 5, deps: ['S1'] },
   { code: 'L3', title: '落幕收光', position: '灯光', start: '19:20', duration: 4, deps: ['L2'] },
 ];
@@ -50,8 +51,8 @@ function seedDraft() {
   if (cueCount > 0) return false;
 
   const insertCue = db.prepare(
-    `INSERT INTO draft_cues(code, title, position, planned_start, duration)
-     VALUES (@code, @title, @position, @planned_start, @duration)`
+    `INSERT INTO draft_cues(code, title, position, planned_start, duration, needs_release)
+     VALUES (@code, @title, @position, @planned_start, @duration, @needs_release)`
   );
   const insertDep = db.prepare(
     'INSERT INTO draft_deps(from_cue, to_cue) VALUES (?, ?)'
@@ -66,6 +67,7 @@ function seedDraft() {
         position: c.position,
         planned_start: timeToMin(c.start),
         duration: c.duration,
+        needs_release: c.needsRelease ? 1 : 0,
       });
       codeToId.set(c.code, info.lastInsertRowid);
     }

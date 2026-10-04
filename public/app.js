@@ -252,7 +252,7 @@ function renderDraft() {
     const preds = predsOf.get(c.id).map((pid) => esc(cueMap.get(pid)?.code || `#${pid}`)).join('、') || '—';
     const end = c.plannedStart + c.duration;
     return `<tr>
-      <td><strong>${esc(c.code)}</strong></td>
+      <td><strong>${esc(c.code)}</strong>${c.needsRelease ? '<div class="rel-flag-tag" title="开始前须舞监与当班执行人双人签认">需放行</div>' : ''}</td>
       <td>${esc(c.title)}</td>
       <td>${esc(c.position)}</td>
       <td class="mono">${c.plannedStartText}</td>
@@ -307,6 +307,7 @@ $('#cue-form').addEventListener('submit', async (ev) => {
     position: fd.get('position'),
     plannedStartText: fd.get('plannedStartText'),
     duration: Number(fd.get('duration')),
+    needsRelease: fd.get('needsRelease') === 'on',
   };
   const id = fd.get('id');
   try {
@@ -341,6 +342,7 @@ $('#draft-cue-tbody').addEventListener('click', async (ev) => {
     f.elements.position.value = c.position;
     f.elements.plannedStartText.value = c.plannedStartText;
     f.elements.duration.value = c.duration;
+    f.elements.needsRelease.checked = !!c.needsRelease;
     $('#cue-form-title').textContent = `编辑提示项 ${c.code}`;
     $('#cue-submit').textContent = '保存修改';
     $('#cue-cancel').hidden = false;
@@ -489,6 +491,66 @@ function skipTag(c) {
   return `<div class="skip-tag" title="${tip}">⛔ 跳过${c.skip.rootCode && c.skip.rootCode !== c.code ? `（随 ${esc(c.skip.rootCode)}）` : ''}：${esc(c.skip.reason)}</div>`;
 }
 
+// ---------- 双人放行：签认状态展示与签认记录 ----------
+
+// 放行签认列：需放行提示项展示执行人/舞监两类签认的当前状态与失效原因；未标记项显示 —
+function releaseCellHtml(c, scope) {
+  if (!c.needsRelease || !c.release) return '<span class="muted">—</span>';
+  if (c.status === 'SKIPPED') return '<span class="muted">—</span>';
+  const r = c.release;
+  const line = (label, s) => {
+    if (!s) return `<div class="rel-line"><span class="rel-kind">${label}</span><span class="rel-none">未签认</span></div>`;
+    if (s.valid) {
+      return `<div class="rel-line"><span class="rel-kind">${label}</span><span class="rel-ok">✓ ${esc(s.signedBy)}</span><span class="muted mono">${esc(s.signedAt)}</span></div>`;
+    }
+    return `<div class="rel-line"><span class="rel-kind">${label}</span><span class="rel-bad">✗ ${esc(s.signedBy)} 已失效</span></div>
+      <div class="rel-reason">${esc(s.invalidReason || '')}</div>`;
+  };
+  const ready = r.ready
+    ? '<div class="rel-ready">✅ 双人放行齐备，可登记开始</div>'
+    : '<div class="rel-pending">待双人放行（两类有效签认齐备后才能开始）</div>';
+  const count = (r.records || []).length;
+  const histBtn = count
+    ? `<button class="ghost tiny" data-act="open-release-history" data-scope="${scope}" data-cue="${c.id}">签认记录(${count})</button>` : '';
+  return `<div class="release-cell">${line('执行人', r.operator)}${line('舞监', r.sm)}${ready}${histBtn}</div>`;
+}
+
+// 签认记录弹窗（现场页与历史版本回看共用，只读）：每条签认的人、时间、目标与直接前置项登记行版本、有效性
+function renderReleaseHistoryHtml(cue, v) {
+  const rows = cue.release?.records || [];
+  const predText = (obj) => {
+    const entries = Object.entries(obj || {});
+    if (!entries.length) return '<span class="muted">（无直接前置）</span>';
+    return entries.map(([ref, ver]) => {
+      const pc = v.cues.find((x) => x.id === Number(ref));
+      return `${esc(pc ? pc.code : '#' + ref)}:v${ver}`;
+    }).join('、');
+  };
+  return `
+    <div class="muted">
+      第 ${v.versionNo} 版 · <strong>${esc(cue.code)}</strong> ${esc(cue.title || '')}（${esc(cue.position)}）
+      ${v.isLatest ? '' : '· 归档版本（只读）'}｜需放行提示项，两类有效签认齐备后才能登记实际开始
+    </div>
+    <div class="table-wrap corr-history">
+      <table>
+        <thead><tr><th>签认</th><th>操作者</th><th>时间</th><th>目标行版本</th><th>直接前置行版本</th><th>有效性</th></tr></thead>
+        <tbody>${rows.map((r) => `<tr>
+          <td>${esc(r.kindLabel)}</td>
+          <td>${esc(r.signedBy)}</td>
+          <td class="mono">${esc(r.signedAt)}</td>
+          <td class="mono">v${r.targetRowVer}</td>
+          <td class="mono">${predText(r.predRowVers)}</td>
+          <td>${r.valid ? '<span class="rel-ok">有效</span>' : `<span class="rel-bad">已失效</span><div class="rel-reason">${esc(r.invalidReason || '')}</div>`}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>
+    <div class="muted">签认失效规则：目标或任一直接前置项的登记行变化（岗位登记、舞监更正、跳过等），或签认人失去该岗位登记权（代班变更）。失效后需重新签认。</div>`;
+}
+
+function openReleaseHistory(cue, v) {
+  openModal(`签认记录：${cue.code}`, renderReleaseHistoryHtml(cue, v));
+}
+
 function renderConflicts(conflicts) {
   const box = $('#live-conflicts');
   if (!conflicts?.length) { box.innerHTML = ''; return; }
@@ -562,6 +624,7 @@ function renderLive() {
       <td class="mono">${skipped ? '—' : (c.actualStartText ?? '—')}${handoverTag(c)}${skipTag(c)}</td>
       <td class="mono">${skipped ? '—' : (c.actualEndText ?? '—')}</td>
       <td class="mono">${skipped ? '—' : (c.estimatedEndText ?? '—')}</td>
+      <td>${releaseCellHtml(c, 'live')}</td>
       <td>${reg}</td>
     </tr>`;
   }).join('');
@@ -657,15 +720,21 @@ function renderRegControls(c) {
   const common = `data-cue="${c.id}" data-ver="${c.rowVer}" data-version-id="${state.live.id}"`;
   let buttons = '';
   if (c.status === 'PENDING') {
+    // 双人放行：需放行项须两类有效签认齐备才能开始；执行人可为本岗位（含代班岗位）签认就绪
+    const needRelease = c.needsRelease && c.release;
+    const startBlocked = needRelease && !c.release.ready;
+    const signBtn = needRelease
+      ? `<div class="reg-actions"><button class="warn tiny" data-act="sign-release" ${common}>签认就绪</button></div>` : '';
     buttons = `
       <div class="reg-actions">
         <input type="time" data-role="start-time" title="留空取当前时间" />
-        <button class="primary tiny" data-reg="start" ${common}>开始</button>
+        <button class="primary tiny" data-reg="start" ${common} ${startBlocked ? 'disabled title="需双人放行：两类有效签认齐备后才能登记开始"' : ''}>开始</button>
       </div>
       <div class="reg-actions">
         <input type="time" data-role="est-time" />
         <button class="ghost tiny" data-reg="estimate" ${common}>预计结束</button>
-      </div>`;
+      </div>
+      ${signBtn}`;
   } else if (c.status === 'RUNNING') {
     buttons = `
       <div class="reg-actions">
@@ -732,6 +801,10 @@ function renderCorrectionCell(c, v, scope) {
   const skipBtn = (v.isLatest && scope === 'live' && c.status !== 'SKIPPED')
     ? `<button class="warn tiny" data-act="open-skip-preview" data-cue="${c.id}">跳过链…</button>`
     : '';
+  // 双人放行：舞监对需放行且未开始的提示项签认可执行（仅当前执行版）
+  const signBtn = (v.isLatest && scope === 'live' && c.status === 'PENDING' && c.needsRelease)
+    ? `<button class="warn tiny" data-act="sign-release" data-cue="${c.id}" data-ver="${c.rowVer}" data-version-id="${v.id}">签认可执行</button>`
+    : '';
   // 顺延预演仅对未完成、未跳过项开放（已开始项可用；结果不会写入任何登记）
   const whatifBtn = (v.isLatest && scope === 'live' && c.status === 'PENDING')
     || (v.isLatest && scope === 'live' && c.status === 'RUNNING')
@@ -743,7 +816,7 @@ function renderCorrectionCell(c, v, scope) {
   const histBtn = c.corrections?.length
     ? `<button class="ghost tiny" data-act="open-history" data-scope="${scope}" data-cue="${c.id}">更正记录(${c.corrections.length})</button>`
     : '';
-  return `<div class="corr-actions">${skipBtn}${whatifBtn}${corrBtn}${histBtn}</div>`;
+  return `<div class="corr-actions">${signBtn}${skipBtn}${whatifBtn}${corrBtn}${histBtn}</div>`;
 }
 
 function openModal(title, html) {
@@ -791,8 +864,29 @@ function renderHistoryHtml(cue, v) {
     <div class="muted">更正只改变现场登记，不改变已发布计划；清除实际开始时系统会同时清除实际完成。</div>`;
 }
 
+// 双人放行签认：舞监签认可执行 / 执行人为本岗位（含代班岗位）签认就绪；服务端原子复核版本、权限与有效性
+async function submitReleaseSignoff(btn) {
+  const kindLabel = state.me.role === 'sm' ? '可执行' : '就绪';
+  if (!confirm(`确认签认「${kindLabel}」？签认将记录操作者、时间及目标与直接前置项的登记行版本；目标或前置项登记变化、代班变更都会使签认失效。`)) return;
+  try {
+    const data = await api('POST', '/api/live/releases', {
+      versionId: Number(btn.dataset.versionId),
+      cueRef: Number(btn.dataset.cue),
+      rowVersion: Number(btn.dataset.ver),
+    });
+    state.live = data.version;
+    const cue = data.version.cues.find((x) => x.id === data.release.cueRef);
+    alertBar('ok', `签认成功：${data.release.kindLabel}（${data.release.signedBy} · ${data.release.signedAt}）。${
+      cue?.release?.ready ? '双人放行已齐备，岗位可登记实际开始。' : '仍待另一类有效签认。'}`);
+    renderLive();
+  } catch (e) {
+    alertBar('error', errorToHtml(e));
+    if (e.status === 409) loadLive().catch(() => {});
+  }
+}
+
 $('#live-tbody').addEventListener('click', (ev) => {
-  const corrBtn = ev.target.closest('button[data-act="open-correct"], button[data-act="open-history"], button[data-act="open-skip-preview"], button[data-act="open-skip-view"], button[data-act="open-explain"], button[data-act="open-whatif"]');
+  const corrBtn = ev.target.closest('button[data-act="open-correct"], button[data-act="open-history"], button[data-act="open-skip-preview"], button[data-act="open-skip-view"], button[data-act="open-explain"], button[data-act="open-whatif"], button[data-act="sign-release"], button[data-act="open-release-history"]');
   if (!corrBtn) return;
   const cueId = Number(corrBtn.dataset.cue);
   if (corrBtn.dataset.act === 'open-explain') {
@@ -803,9 +897,15 @@ $('#live-tbody').addEventListener('click', (ev) => {
     openWhatIf([cueId]);
     return;
   }
+  if (corrBtn.dataset.act === 'sign-release') {
+    submitReleaseSignoff(corrBtn);
+    return;
+  }
   const { v, cue } = findCueInContext('live', cueId);
   if (!cue) return;
-  if (corrBtn.dataset.act === 'open-history') {
+  if (corrBtn.dataset.act === 'open-release-history') {
+    openReleaseHistory(cue, v);
+  } else if (corrBtn.dataset.act === 'open-history') {
     openModal(`更正记录：${cue.code}`, renderHistoryHtml(cue, v));
   } else if (corrBtn.dataset.act === 'open-skip-preview') {
     openSkipPreview(cueId);
@@ -1375,6 +1475,15 @@ $('#version-detail').addEventListener('click', (ev) => {
     const v = state.detail;
     const cue = v?.cues.find((x) => x.id === cueId);
     if (cue) openSkipView(cue, v);
+    return;
+  }
+  // 双人放行：历史版本只读回看签认记录（含每条的失效原因）
+  const relBtn = ev.target.closest('button[data-act="open-release-history"]');
+  if (relBtn) {
+    const cueId = Number(relBtn.dataset.cue);
+    const v = state.detail;
+    const cue = v?.cues.find((x) => x.id === cueId);
+    if (cue) openReleaseHistory(cue, v);
   }
 });
 
@@ -1405,7 +1514,7 @@ function renderDetail() {
     ${conflictHtml}
     ${deputyHtml}
     <div class="panel"><div class="table-wrap"><table>
-      <thead><tr><th>编号</th><th>说明</th><th>岗位</th><th>计划</th><th>重算开始</th><th>重算结束</th><th>状态</th><th>实际开始</th><th>实际完成</th><th>预计结束</th><th>登记人/时间</th>${state.me?.role === 'sm' ? '<th>更正</th>' : ''}</tr></thead>
+      <thead><tr><th>编号</th><th>说明</th><th>岗位</th><th>计划</th><th>重算开始</th><th>重算结束</th><th>状态</th><th>实际开始</th><th>实际完成</th><th>预计结束</th><th>放行签认</th><th>登记人/时间</th>${state.me?.role === 'sm' ? '<th>更正</th>' : ''}</tr></thead>
       <tbody>${v.cues.map((c) => {
         const skipped = c.status === 'SKIPPED';
         const skipViewBtn = state.me?.role === 'sm' && skipped
@@ -1421,6 +1530,7 @@ function renderDetail() {
         <td class="mono">${skipped ? '—' : (c.actualStartText ?? '—')}${handoverTag(c)}${skipTag(c)}</td>
         <td class="mono">${skipped ? '—' : (c.actualEndText ?? '—')}</td>
         <td class="mono">${skipped ? '—' : (c.estimatedEndText ?? '—')}</td>
+        <td>${releaseCellHtml(c, 'detail')}</td>
         <td class="muted">${skipped ? '—' : (c.updatedBy ? esc(c.updatedBy) + '<br>' + esc(c.updatedAt || '') : '—')}</td>
         <td>${state.me?.role === 'sm' ? (skipViewBtn || renderCorrectionCell(c, v, 'detail')) : ''}</td>
       </tr>`;

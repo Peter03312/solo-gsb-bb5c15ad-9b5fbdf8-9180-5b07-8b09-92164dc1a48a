@@ -116,10 +116,11 @@ function deputyRowsFor(versionId) {
 
 function loadDraftCues() {
   return db.prepare(
-    'SELECT id, code, title, position, planned_start, duration, row_ver FROM draft_cues ORDER BY id'
+    'SELECT id, code, title, position, planned_start, duration, needs_release, row_ver FROM draft_cues ORDER BY id'
   ).all().map((c) => ({
     id: c.id, code: c.code, title: c.title, position: c.position,
-    plannedStart: c.planned_start, duration: c.duration, rowVersion: c.row_ver,
+    plannedStart: c.planned_start, duration: c.duration,
+    needsRelease: c.needs_release === 1, rowVersion: c.row_ver,
   }));
 }
 
@@ -148,22 +149,26 @@ function cueInputFromBody(body) {
   const startText = String(body.plannedStartText || '').trim();
   const plannedStart = timeToMin(startText);
   const duration = Number(body.duration);
+  // 需放行：双人放行标记，随发布版本冻结；未标记项继续按原流程登记
+  const needsRelease = body.needsRelease === true || body.needsRelease === 1
+    || body.needsRelease === '1' || body.needsRelease === 'true' || body.needsRelease === 'on';
   if (!code) throw new ApiError(400, 'BAD_INPUT', '提示项编号不能为空');
   if (!position) throw new ApiError(400, 'BAD_INPUT', `「${code}」岗位不能为空`);
   if (!positionsList().includes(position)) throw new ApiError(400, 'BAD_INPUT', `岗位「${position}」不在已配置岗位列表中`);
   if (plannedStart === null) throw new ApiError(400, 'BAD_INPUT', `「${code}」计划开始时间格式应为 HH:MM`);
   if (!Number.isInteger(duration) || duration <= 0) throw new ApiError(400, 'BAD_INPUT', `「${code}」时长必须为正整数分钟`);
-  return { code, title, position, plannedStart, duration };
+  return { code, title, position, plannedStart, duration, needsRelease };
 }
 
 // 某版本的计划与现场登记输入（发布时冻结的提示项/前置 + 当前登记），供现场重算与排期来源解释共用
 function versionInputs(versionId) {
   const cues = db.prepare(
-    `SELECT cue_ref, code, title, position, planned_start, duration
+    `SELECT cue_ref, code, title, position, planned_start, duration, needs_release
      FROM published_cues WHERE version_id = ? ORDER BY id`
   ).all(versionId).map((c) => ({
     id: c.cue_ref, code: c.code, title: c.title, position: c.position,
     plannedStart: c.planned_start, duration: c.duration,
+    needsRelease: c.needs_release === 1,
   }));
   const deps = db.prepare(
     'SELECT from_ref, to_ref FROM published_deps WHERE version_id = ? ORDER BY id'
@@ -185,8 +190,132 @@ function versionInputs(versionId) {
   return { cues, deps, regMap };
 }
 
+// ---------- 双人放行（需放行提示项的签认与开始门禁） ----------
+
+// 某版本全部签认记录（按 id 升序；同一提示项同一类可有多条，有效性动态判定，旧签认不删除）
+function loadReleaseSignoffs(versionId) {
+  return db.prepare(
+    `SELECT id, cue_ref, kind, signed_by_id, signed_by, signed_at, target_row_ver, pred_row_vers, position
+     FROM release_signoffs WHERE version_id = ? ORDER BY id`
+  ).all(versionId).map((r) => ({
+    id: r.id,
+    cueRef: r.cue_ref,
+    kind: r.kind,
+    signedById: r.signed_by_id,
+    signedBy: r.signed_by,
+    signedAt: r.signed_at,
+    targetRowVer: r.target_row_ver,
+    predRowVers: JSON.parse(r.pred_row_vers || '{}'),
+    position: r.position,
+  }));
+}
+
+// 签认有效性判定上下文：当前登记行版本（regMap）、提示项编号、各执行账号当下有效岗位（含代班）
+function releaseContextFor(versionId, cues, regMap) {
+  const codeOf = new Map(cues.map((c) => [c.id, c.code]));
+  const rightsByUserId = new Map();
+  db.prepare("SELECT id, position FROM users WHERE role = 'operator'").all()
+    .forEach((u) => rightsByUserId.set(u.id, effectivePositionsFor(u, versionId)));
+  return { codeOf, regMap, rightsByUserId };
+}
+
+// 单条签认的失效判定（动态计算，不落库）：
+// 目标或任一直接前置项的登记行版本已变化 → 失效；执行人签认者当下失去该岗位登记权（代班变更）→ 失效
+function evaluateSignoff(s, ctx) {
+  const reg = ctx.regMap.get(s.cueRef);
+  const targetVer = reg ? reg.rowVer : null;
+  if (targetVer === null || s.targetRowVer !== targetVer) {
+    return { valid: false, reason: `目标登记行已变化（签认时 v${s.targetRowVer}，当前 v${targetVer ?? '缺失'}）` };
+  }
+  for (const [ref, ver] of Object.entries(s.predRowVers)) {
+    const cur = ctx.regMap.get(Number(ref));
+    const curVer = cur ? cur.rowVer : null;
+    if (curVer !== ver) {
+      const code = ctx.codeOf.get(Number(ref)) || `#${ref}`;
+      return { valid: false, reason: `直接前置项「${code}」登记行已变化（签认时 v${ver}，当前 v${curVer ?? '缺失'}）` };
+    }
+  }
+  if (s.kind === 'operator') {
+    const rights = ctx.rightsByUserId.get(s.signedById);
+    if (!rights || !rights.has(s.position)) {
+      return { valid: false, reason: `签认人 ${s.signedBy} 已失去岗位「${s.position}」的登记权（代班变更），其签认失效` };
+    }
+  }
+  return { valid: true, reason: null };
+}
+
+const RELEASE_KIND_LABEL = { operator: '执行人·就绪', sm: '舞监·可执行' };
+
+// 某个需放行提示项的签认汇总：每类取「最新有效签认」展示，无有效签认时取最新一条并附失效原因；
+// records 为全部签认记录（含各自有效性），供现场页与历史版本回看
+function releaseInfoForCue(cueRef, signoffsByCue, ctx) {
+  const records = (signoffsByCue.get(cueRef) || []).map((s) => {
+    const ev = evaluateSignoff(s, ctx);
+    return {
+      kind: s.kind,
+      kindLabel: RELEASE_KIND_LABEL[s.kind] || s.kind,
+      signedBy: s.signedBy,
+      signedAt: s.signedAt,
+      targetRowVer: s.targetRowVer,
+      predRowVers: s.predRowVers,
+      valid: ev.valid,
+      invalidReason: ev.reason,
+    };
+  });
+  const pick = (kind) => {
+    const list = records.filter((r) => r.kind === kind);
+    const valid = list.filter((r) => r.valid);
+    if (valid.length) return valid[valid.length - 1];
+    return list.length ? list[list.length - 1] : null;
+  };
+  const operator = pick('operator');
+  const sm = pick('sm');
+  const brief = (r) => (r ? {
+    signedBy: r.signedBy, signedAt: r.signedAt, valid: r.valid, invalidReason: r.invalidReason,
+  } : null);
+  return {
+    required: true,
+    ready: Boolean(operator?.valid && sm?.valid),
+    operator: brief(operator),
+    sm: brief(sm),
+    records,
+  };
+}
+
+// 开始登记门禁：同一事务内调用，复核两类签认是否存在且有效；不齐时逐项给出缺失/失效原因
+function evaluateReleaseGate(versionId, cueRef) {
+  const { cues, regMap } = versionInputs(versionId);
+  const ctx = releaseContextFor(versionId, cues, regMap);
+  const byCue = new Map();
+  for (const s of loadReleaseSignoffs(versionId)) {
+    if (!byCue.has(s.cueRef)) byCue.set(s.cueRef, []);
+    byCue.get(s.cueRef).push(s);
+  }
+  const info = releaseInfoForCue(cueRef, byCue, ctx);
+  const items = [];
+  for (const kind of ['operator', 'sm']) {
+    const cur = kind === 'operator' ? info.operator : info.sm;
+    if (cur?.valid) continue;
+    items.push({
+      kind,
+      kindLabel: kind === 'operator' ? '执行人就绪签认' : '舞监可执行签认',
+      state: cur ? 'invalid' : 'missing',
+      reason: cur ? `已失效：${cur.invalidReason}` : '尚未签认',
+    });
+  }
+  return { ready: items.length === 0, items };
+}
+
 function versionPayload(versionRow) {
   const { cues, deps, regMap } = versionInputs(versionRow.id);
+
+  // 双人放行：本版全部签认记录（按提示项分组）与有效性判定上下文（含当下代班授权）
+  const signoffsByCue = new Map();
+  for (const s of loadReleaseSignoffs(versionRow.id)) {
+    if (!signoffsByCue.has(s.cueRef)) signoffsByCue.set(s.cueRef, []);
+    signoffsByCue.get(s.cueRef).push(s);
+  }
+  const releaseCtx = releaseContextFor(versionRow.id, cues, regMap);
 
   // 依赖链跳过留痕（每项至多一条）：操作者、时间、原因、触发根项
   const skipMap = new Map();
@@ -255,6 +384,8 @@ function versionPayload(versionRow) {
       actualStartText: minToTime(c.actualStart),
       actualEndText: minToTime(c.actualEnd),
       estimatedEndText: minToTime(c.estimatedEnd),
+      needsRelease: c.needsRelease === true,
+      release: c.needsRelease ? releaseInfoForCue(c.id, signoffsByCue, releaseCtx) : null,
       corrections: corrMap.get(c.id) || [],
       skip: (() => {
         const s = skipMap.get(c.id);
@@ -325,9 +456,9 @@ app.post('/api/draft/cues', requireSM, (req, res, next) => {
     const dup = db.prepare('SELECT 1 FROM draft_cues WHERE code = ?').get(fields.code);
     if (dup) throw new ApiError(400, 'BAD_INPUT', `编号「${fields.code}」已存在`);
     db.prepare(
-      `INSERT INTO draft_cues(code, title, position, planned_start, duration)
-       VALUES (@code, @title, @position, @plannedStart, @duration)`
-    ).run(fields);
+      `INSERT INTO draft_cues(code, title, position, planned_start, duration, needs_release)
+       VALUES (@code, @title, @position, @plannedStart, @duration, @needsRelease)`
+    ).run({ ...fields, needsRelease: fields.needsRelease ? 1 : 0 });
     bumpDraftVersion();
     res.status(201).json(draftPayload());
   } catch (e) { next(e); }
@@ -349,8 +480,9 @@ app.put('/api/draft/cues/:id', requireSM, (req, res, next) => {
     if (dup) throw new ApiError(400, 'BAD_INPUT', `编号「${fields.code}」已存在`);
     db.prepare(
       `UPDATE draft_cues SET code=@code, title=@title, position=@position,
-         planned_start=@plannedStart, duration=@duration, row_ver=row_ver+1 WHERE id=@id`
-    ).run({ ...fields, id });
+         planned_start=@plannedStart, duration=@duration, needs_release=@needsRelease,
+         row_ver=row_ver+1 WHERE id=@id`
+    ).run({ ...fields, needsRelease: fields.needsRelease ? 1 : 0, id });
     bumpDraftVersion();
     res.json(draftPayload());
   } catch (e) { next(e); }
@@ -679,8 +811,8 @@ app.post('/api/publish', requireSM, (req, res, next) => {
       const versionId = info.lastInsertRowid;
 
       const insCue = db.prepare(
-        `INSERT INTO published_cues(version_id, cue_ref, code, title, position, planned_start, duration)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO published_cues(version_id, cue_ref, code, title, position, planned_start, duration, needs_release)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       );
       const insDep = db.prepare(
         'INSERT INTO published_deps(version_id, from_ref, to_ref) VALUES (?, ?, ?)'
@@ -690,7 +822,8 @@ app.post('/api/publish', requireSM, (req, res, next) => {
         `INSERT INTO registrations(version_id, cue_ref, position, actual_start, actual_end, source_version_id, source_cue_ref)
          VALUES (@version_id, @cue_ref, @position, @actual_start, @actual_end, @source_version_id, @source_cue_ref)`
       );
-      for (const c of cues) insCue.run(versionId, c.id, c.code, c.title, c.position, c.plannedStart, c.duration);
+      // 「需放行」标记随发布冻结进版本；新版不继承旧版签认（release_signoffs 按版本记录，发布不复制）
+      for (const c of cues) insCue.run(versionId, c.id, c.code, c.title, c.position, c.plannedStart, c.duration, c.needsRelease ? 1 : 0);
       for (const d of deps) insDep.run(versionId, d.from, d.to);
       for (const c of cues) {
         const h = carry.get(c.id);
@@ -958,6 +1091,16 @@ app.post('/api/registrations', requireAuth, (req, res, next) => {
 
       if (action === 'start') {
         if (reg.actual_start !== null) throw new ApiError(400, 'BAD_STATE', `「${pc.code}」已登记实际开始`);
+        // 双人放行门禁：需放行提示项须「执行人就绪 + 舞监可执行」两类有效签认齐备才能登记实际开始；
+        // 同一事务内复核签认有效性（目标/直接前置登记行版本、签认人当下岗位登记权），缺签或失效整体拒绝
+        if (pc.needs_release === 1) {
+          const gate = evaluateReleaseGate(versionId, cueRef);
+          if (!gate.ready) {
+            throw new ApiError(409, 'RELEASE_MISSING',
+              `「${pc.code}」需双人放行：${gate.items.map((i) => `${i.kindLabel}${i.state === 'missing' ? '尚未签认' : '已失效'}`).join('、')}，两类有效签认齐备前不能登记实际开始`,
+              { items: gate.items });
+          }
+        }
         const t = parseOptTime(req.body.time) ?? currentMinute();
         patch = { actual_start: t };
       } else if (action === 'estimate') {
@@ -1118,6 +1261,99 @@ app.post('/api/registrations/corrections', requireSM, (req, res, next) => {
     // 成功后按现有规则重算后续未开始项及岗位冲突（versionPayload 内 computeLive）
     const payload = versionPayload(ver);
     res.json({ version: payload, cascaded: result.cascaded });
+  } catch (e) { next(e); }
+});
+
+// ---------- 双人放行签认（仅当前执行版；舞监签认可执行，执行人签认就绪） ----------
+
+// 签认：同一事务内原子复核当前执行版、提示项需放行标记、登记状态（未开始/未完成/未跳过）、
+// 行版本号与签认权限（执行人仅限当下有登记权的岗位，含代班获得、排除被顶替）；
+// 任一不通过整体拒绝，不写入部分签认。成功后记录操作者、时间、目标与直接前置项的登记行版本。
+app.post('/api/live/releases', requireAuth, (req, res, next) => {
+  try {
+    const user = req.session.user;
+    const kind = user.role === 'sm' ? 'sm' : (user.role === 'operator' ? 'operator' : null);
+    if (!kind) throw new ApiError(403, 'FORBIDDEN', '仅舞监或执行岗位可签认');
+    const versionId = Number(req.body.versionId);
+    const cueRef = Number(req.body.cueRef);
+    const rowVersion = Number(req.body.rowVersion);
+
+    const result = db.transaction(() => {
+      const verRow = db.prepare('SELECT * FROM rehearsal_versions WHERE id = ?').get(versionId);
+      if (!verRow) throw new ApiError(404, 'NOT_FOUND', '联排版本不存在');
+      const latest = db.prepare('SELECT id FROM rehearsal_versions ORDER BY version_no DESC LIMIT 1').get();
+      if (!latest || latest.id !== verRow.id) {
+        throw new ApiError(409, 'VERSION_ARCHIVED',
+          `第 ${verRow.version_no} 版已不是当前执行版本（已有新版本发布），签认只对当前执行版有效，请刷新`);
+      }
+
+      const pc = db.prepare('SELECT * FROM published_cues WHERE version_id=? AND cue_ref=?').get(versionId, cueRef);
+      if (!pc) throw new ApiError(404, 'NOT_FOUND', '提示项不存在于该版本');
+      if (pc.needs_release !== 1) {
+        throw new ApiError(400, 'RELEASE_NOT_REQUIRED',
+          `「${pc.code}」未标记「需放行」，按原流程登记即可，无需签认`);
+      }
+
+      const reg = db.prepare('SELECT * FROM registrations WHERE version_id=? AND cue_ref=?').get(versionId, cueRef);
+      if (!reg) throw new ApiError(404, 'NOT_FOUND', '登记记录不存在');
+      // 已开始 / 已完成 / 已跳过：签认不再有意义，明确拒绝
+      if (reg.skipped === 1) {
+        throw new ApiError(409, 'CUE_SKIPPED', `「${pc.code}」已被舞监标记为跳过（不再执行），不能签认`);
+      }
+      if (reg.actual_end !== null) throw new ApiError(400, 'BAD_STATE', `「${pc.code}」已完成，无需签认`);
+      if (reg.actual_start !== null) throw new ApiError(400, 'BAD_STATE', `「${pc.code}」已登记实际开始，签认应在开始前完成`);
+      if (rowVersion !== reg.row_ver) {
+        throw new ApiError(409, 'VERSION_CONFLICT',
+          `「${pc.code}」登记已被更新：当前行版本 ${reg.row_ver}，提交基于 ${rowVersion}，请刷新后重试`,
+          { currentRowVersion: reg.row_ver });
+      }
+
+      // 权限：执行人只能为自己当下有登记权的岗位签认就绪（代班期间被顶替者失去签认权，代班账号获得）
+      if (kind === 'operator' && !effectivePositionsFor(user, versionId).has(pc.position)) {
+        const dep = db.prepare(
+          'SELECT * FROM position_deputies WHERE version_id = ? AND position = ? AND active = 1'
+        ).get(versionId, pc.position);
+        if (dep && pc.position === user.position) {
+          throw new ApiError(403, 'DEPUTY_ACTIVE',
+            `岗位「${pc.position}」当前由 ${dep.deputy_display_name}（${dep.deputy_username}）代班，你的该岗位登记权已暂时移交，不能签认`);
+        }
+        throw new ApiError(403, 'FORBIDDEN',
+          `「${pc.code}」属于岗位「${pc.position}」，当前账号只能为本岗位（含代班岗位）提示项签认`);
+      }
+
+      // 记录目标与直接前置项的登记行版本（同一事务内读取，作为后续失效判定的基准）
+      const predRowVers = {};
+      db.prepare(
+        `SELECT d.from_ref AS ref, r.row_ver AS rowVer
+         FROM published_deps d
+         JOIN registrations r ON r.version_id = d.version_id AND r.cue_ref = d.from_ref
+         WHERE d.version_id = ? AND d.to_ref = ? ORDER BY d.from_ref`
+      ).all(versionId, cueRef).forEach((p) => { predRowVers[p.ref] = p.rowVer; });
+
+      const stamp = new Date().toLocaleString('sv-SE'); // YYYY-MM-DD HH:MM:SS
+      const info = db.prepare(
+        `INSERT INTO release_signoffs(version_id, cue_ref, kind, signed_by_id, signed_by, signed_at, target_row_ver, pred_row_vers, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(versionId, cueRef, kind, user.id, user.displayName, stamp, reg.row_ver,
+        JSON.stringify(predRowVers), pc.position);
+      return { verRow, signoffId: info.lastInsertRowid, stamp, targetRowVer: reg.row_ver, predRowVers };
+    })();
+
+    const payload = versionPayload(result.verRow);
+    if (user.role === 'operator') payload.myPositions = [...effectivePositionsFor(user, result.verRow.id)];
+    res.status(201).json({
+      version: payload,
+      release: {
+        id: result.signoffId,
+        cueRef,
+        kind,
+        kindLabel: RELEASE_KIND_LABEL[kind],
+        signedBy: user.displayName,
+        signedAt: result.stamp,
+        targetRowVer: result.targetRowVer,
+        predRowVers: result.predRowVers,
+      },
+    });
   } catch (e) { next(e); }
 });
 

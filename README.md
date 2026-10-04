@@ -151,6 +151,18 @@ npm start
 - **只读**：预演**不更改任何登记、已发布计划、跳过状态与更正历史**，也不推进任何行版本；结果页可点「调整假设重新预演」反复试算；如需落实，仍由岗位按既有流程登记或由舞监更正；
 - 仅**舞监**可调用（执行账号 403）；仅**当前执行版**可预演；也可通过 HTTP API `POST /api/live/whatif` 获取与页面完全同等的结果（见第十二节示例）。
 
+#### 双人放行（本轮新增）
+
+联排中有些提示项必须经**舞监与当班执行人双人放行**后才能开始：
+
+1. **草稿标记，随发布冻结**：舞监在草稿编辑页的提示项表单勾选「需放行」（新增/编辑均可），列表中该编号旁显示「需放行」徽标；标记随发布版本冻结，未标记项继续按原流程登记。首次启动的示例草稿中 `L2`（追光主角上场）已标记，可直接体验；
+2. **两类签认**：当前执行版里，执行人只能为**自己当下有登记权的岗位**（本岗位或代班获得的岗位；被代班顶替者失去签认权）签认**就绪**，舞监对任一需放行提示项签认**可执行**；每次签认记录**操作者、时间及目标与直接前置项的登记行版本**；
+3. **开始门禁**：两类**有效**签认齐备后，岗位才能登记**实际开始**（页面在签认不齐时禁用「开始」按钮，服务端仍强制复核）；**预计结束与完成登记仍遵循现有规则**（预计结束不需签认，完成须先有实际开始）；
+4. **签认失效**：目标或任一**直接前置项**的登记行变化（岗位登记、舞监更正、跳过等使行版本推进）→ 旧签认失效；**代班变更**后，失去该岗位登记权者的签认失效（撤销代班使原岗位账号恢复登记权时，其未被覆盖的签认随之恢复有效）；失效后需**重新签认**（可多次签认，记录全部保留）；
+5. **原子复核与明确拒绝**：签认与开始提交均在**同一事务内**复核当前执行版、权限与有效性；版本已归档（409 `VERSION_ARCHIVED`）、行版本过期（409 `VERSION_CONFLICT`）、提示项未标记需放行（400 `RELEASE_NOT_REQUIRED`）、已开始/已完成（400 `BAD_STATE`）、已跳过（409 `CUE_SKIPPED`）、缺签或签认失效（409 `RELEASE_MISSING`，逐项列出缺失/失效原因）均**明确拒绝且不写入部分结果**；
+6. **版本边界**：新发布版**不继承签认**（新版需重新签认）；发布**交接带入的已完成项不追补签认**（已完成无需再开始）；历史版本在「发布版本」回看页**只读查看签认记录**（每条的签认人、时间、目标与直接前置项登记行版本、有效性及失效原因）；
+7. **现场页展示**：需放行提示项的「放行签认」列实时显示执行人/舞监两类签认状态（未签认 / 有效 / 已失效及失效原因）与「双人放行齐备」提示，点「签认记录(N)」可回看全部签认。
+
 #### 排期来源解释（本轮新增）
 
 现场发现某提示项顺延时，舞监与执行岗位都可在「现场联排」页（当前执行版）或「发布版本」回看页（历史版本）点该行的「**来源**」按钮，查看其**排期开始时刻如何形成**：
@@ -164,9 +176,10 @@ npm start
 ### 执行岗位
 
 - 「现场联排」页只能看到当前执行版本，本岗位的行高亮并出现操作按钮：
-  - **开始**：登记实际开始（默认取当前时间，可手填 HH:MM）；
+  - **开始**：登记实际开始（默认取当前时间，可手填 HH:MM）；**需放行**提示项须两类有效签认齐备后才能登记（不齐时按钮禁用，服务端同样强制复核）；
   - **完成**：登记实际完成（须先开始，完成时刻不得早于开始）；
   - **预计结束**：未开始或已开始均可登记，不得早于（实际或原计划）开始；
+  - **签认就绪**：需放行提示项可为本岗位（含代班岗位）签认就绪，与舞监的「可执行」签认共同构成双人放行；目标或其直接前置项登记变化、或你失去该岗位登记权（代班变更）都会使签认失效，需重新签认；
 - **代班识别**：若你被指定为某岗位代班，页面顶部黄色横幅提示「你正在代班岗位…」，该岗位行同样高亮并可登记（自己原有岗位权限保留）；若你的岗位被他人代班，横幅提示登记权已移交，本岗位行显示「已由 XX 代班」且不再出现操作按钮；
 - 非本岗位提示项只读；对非最新（已归档）版本不能登记；
 - 已完成项保留实际时间不再变化；未开始项按前置链重算，**重算开始不早于原计划**；
@@ -177,7 +190,7 @@ npm start
 
 ### 已发布版本回看
 
-「发布版本」页列出全部历史版本（版本号、说明、发布时间、登记数量），点击「回看」查看该版本冻结的提示项、前置关系与当时/最新的现场重算结果；每行可点「来源」查看该版本下排期开始时刻的来源链（只读，与同一版本重算结果一致）；舞监还可在回看页查看每行的**更正记录**（更正前后值、操作者、时间、原因），归档版本为只读、不能更正。
+「发布版本」页列出全部历史版本（版本号、说明、发布时间、登记数量），点击「回看」查看该版本冻结的提示项、前置关系与当时/最新的现场重算结果；每行可点「来源」查看该版本下排期开始时刻的来源链（只读，与同一版本重算结果一致）；需放行提示项可点「签认记录(N)」只读回看该版本全部签认（签认人、时间、目标与直接前置项登记行版本、有效性及失效原因）；舞监还可在回看页查看每行的**更正记录**（更正前后值、操作者、时间、原因），归档版本为只读、不能更正。
 
 ### 版本号（乐观锁）规则
 
@@ -187,6 +200,7 @@ npm start
 - **舞监更正与岗位登记共用同一条登记行版本号**：任一方更新后行版本 +1，另一方（或持旧页面重复提交）会收到 409 拒绝并被要求刷新，确保更正不能覆盖新登记、新登记也不能覆盖更正。
 - **依赖链跳过同样以链中每项的登记行版本号为乐观锁**：确认必须回传预览所见的每个 `rowVersion`；预览后任一项被登记或更正（行版本推进），整次跳过 409 拒绝；跳过成功后新跳过项行版本 +1（已跳过项不重复更新）。
 - **现场顺延预演（只读）在单次事务内同时核对所见执行版与全部提示项登记行版本**：请求必须携带 `versionId` 与 `rows: [{cueRef, rowVersion}]`（全部提示项，一项不能少）；版本已归档、行集合与当前版本不一致、或任一登记行版本已推进，均以 409 `WHATIF_STALE` 整体拒绝并逐项给出当前行版本，不会返回基于混合时点的预演结果；预演不推进任何版本号、不写入数据，可对同一快照反复试算。
+- **双人放行签认以「目标 + 直接前置项」的登记行版本为有效性基准**：签认时记录这些行版本；此后目标或任一直接前置项的登记行版本推进（岗位登记、舞监更正、跳过等），旧签认即失效，开始登记与现场展示均按当前行版本动态判定；签认提交本身也校验目标行版本（过期 409 `VERSION_CONFLICT`），代班变更使失去登记权者的签认失效（不推进任何行版本，按当下授权动态判定）。
 
 ## 五、配置项（环境变量）
 
@@ -231,21 +245,22 @@ SESSION_SECRET=your-long-random-secret
 | --- | --- | --- | --- |
 | POST | `/api/login` `/api/logout` | 公开 | 登录 / 退出 |
 | GET | `/api/me` | 公开 | 当前会话与岗位列表 |
-| GET | `/api/draft` | 舞监 | 草稿（含实时校验结果） |
-| POST/PUT/DELETE | `/api/draft/cues[/:id]` | 舞监 | 提示项增改删（校验草稿版本号/行版本号） |
+| GET | `/api/draft` | 舞监 | 草稿（含实时校验结果；提示项含 `needsRelease` 需放行标记） |
+| POST/PUT/DELETE | `/api/draft/cues[/:id]` | 舞监 | 提示项增改删（校验草稿版本号/行版本号；可设置 `needsRelease` 需放行） |
 | POST/DELETE | `/api/draft/deps[/:id]` | 舞监 | 前置关系增删（校验草稿版本号） |
 | GET | `/api/publish/handover/preview` | 舞监 | **发布前交接预览**：旧执行版已完成项的交接资格、不合格原因、旧登记行版本；无旧版时列表为空 |
 | POST | `/api/publish` | 舞监 | 发布只读版本；冲突返回 422 并列出冲突项；可带 `handover` 交接选择，资格/版本失效返回 409 `HANDOVER_STALE` |
-| GET | `/api/live` | 已登录 | 当前最新版本的现场重算结果（含每行更正历史 `corrections`、跳过留痕 `skip`、本版代班记录 `deputies`；执行账号另含有效岗位 `myPositions`） |
+| GET | `/api/live` | 已登录 | 当前最新版本的现场重算结果（含每行更正历史 `corrections`、跳过留痕 `skip`、本版代班记录 `deputies`、需放行标记 `needsRelease` 与签认状态 `release`；执行账号另含有效岗位 `myPositions`） |
 | GET | `/api/live/deputies` | 已登录 | 当前执行版代班记录（含已撤销历史）；舞监另返回可选岗位 `positions` 与执行账号 `operators` |
 | POST | `/api/live/deputies` | 舞监 | 启用岗位代班（仅当前执行版）；重复启用 409 `DEPUTY_EXISTS` |
 | POST | `/api/live/deputies/revoke` | 舞监 | 撤销岗位在任代班；无在任代班 409 `NO_ACTIVE_DEPUTY` |
-| POST | `/api/registrations` | 执行岗位 | start / complete / estimate（同一事务内复核当前版、代班授权、行版本号；已跳过项 409 `CUE_SKIPPED`） |
+| POST | `/api/registrations` | 执行岗位 | start / complete / estimate（同一事务内复核当前版、代班授权、行版本号；已跳过项 409 `CUE_SKIPPED`；需放行项 start 须两类有效签认齐备，否则 409 `RELEASE_MISSING`） |
+| POST | `/api/live/releases` | 舞监 / 执行岗位 | **双人放行签认**（仅当前执行版）：舞监签认可执行、执行人为本岗位（含代班岗位）签认就绪；事务内原子复核版本、权限、行版本与登记状态；记录操作者、时间、目标与直接前置项登记行版本 |
 | POST | `/api/registrations/corrections` | 舞监 | 更正/清除单个登记字段（校验行版本号、仅当前执行版本；级联清除与一致性校验；原子写入更正历史；已跳过项 409 `CUE_SKIPPED`） |
 | GET | `/api/live/skips/preview` | 舞监 | **依赖链跳过影响预览**（仅当前执行版）：根项及沿前置可达的全部后继、各项行版本、阻断项与已跳过原因 |
 | POST | `/api/live/skips` | 舞监 | **确认跳过整条依赖链**（非空原因 + 预览所见行版本；事务内核验，阻断/版本变化整体拒绝；首跳清除预计结束并留痕，已跳过项不重复留痕） |
 | POST | `/api/live/whatif` | 舞监 | **现场顺延预演**（仅当前执行版，只读）：携带 `versionId`、全部登记行 `rows[]` 与一项或多项假设 `assumptions[]`；同一快照同时套用全部假设重算，返回逐项待执行开始/结束差异与新增/消失/仍存在的同岗位冲突；版本或任一行变化整体 409 `WHATIF_STALE`，无效假设 400 `WHATIF_INVALID`，不写入任何数据 |
-| GET | `/api/versions` `/api/versions/:id` | 已登录 | 版本列表（含 `skipCount`）与历史回看（每行含更正历史 `corrections` 与跳过留痕 `skip`） |
+| GET | `/api/versions` `/api/versions/:id` | 已登录 | 版本列表（含 `skipCount`）与历史回看（每行含更正历史 `corrections`、跳过留痕 `skip`、需放行标记 `needsRelease` 与签认记录 `release.records`） |
 | GET | `/api/versions/:id/cues/:cueRef/explain` | 已登录 | **排期开始来源解释**（当前执行版与历史版本通用，只读）：以原计划开始为基线，达到最终最大约束时刻的直接前置全部列出并逐层追溯来源；目标已开始/已完成/已跳过返回明确说明 |
 
 ## 八、登记交接 API 调用示例
@@ -796,3 +811,166 @@ HTTP 400
 ```
 
 预演全程只读：重复调用、试算不同假设均不会改变 `GET /api/live` 的任何结果（登记时间、行版本、冲突、更正历史保持原样）。
+
+## 十三、双人放行 API 调用示例（本轮新增）
+
+以本地默认端口 3000 为例（`curl -c/-b` 复用会话 Cookie）。假设草稿中 `L2`（灯光，`cueRef=4`，直接前置为 `S1`）已勾选「需放行」并发布第 1 版为当前执行版（首次启动的示例草稿即如此）。
+
+### 1. 草稿设置「需放行」并发布
+
+```bash
+curl -c sm.cookie -s -X POST http://localhost:3000/api/login \
+  -H 'Content-Type: application/json' -d '{"username":"sm","password":"sm12345"}'
+
+# 新增/编辑提示项时携带 needsRelease（编辑需同时携带行版本号 rowVersion）
+curl -b sm.cookie -s -X PUT http://localhost:3000/api/draft/cues/4 \
+  -H 'Content-Type: application/json' -d '{
+    "version": 0, "rowVersion": 1, "code": "L2", "title": "追光主角上场",
+    "position": "灯光", "plannedStartText": "19:10", "duration": 8,
+    "needsRelease": true
+  }'
+
+# 发布：需放行标记随版本冻结（published_cues.needs_release）
+curl -b sm.cookie -s -X POST http://localhost:3000/api/publish \
+  -H 'Content-Type: application/json' -d '{"version":1,"note":"首版"}'
+```
+
+### 2. 未签认时登记开始被明确拒绝（409，不写入任何登记）
+
+```bash
+curl -c light.cookie -s -X POST http://localhost:3000/api/login \
+  -H 'Content-Type: application/json' -d '{"username":"light","password":"light123"}'
+
+curl -b light.cookie -s -X POST http://localhost:3000/api/registrations \
+  -H 'Content-Type: application/json' \
+  -d '{"versionId":1,"cueRef":4,"rowVersion":1,"action":"start","time":"19:10"}'
+```
+
+```json
+HTTP 409
+{
+  "error": "RELEASE_MISSING",
+  "message": "「L2」需双人放行：执行人就绪签认尚未签认、舞监可执行签认尚未签认，两类有效签认齐备前不能登记实际开始",
+  "items": [
+    { "kind": "operator", "kindLabel": "执行人就绪签认", "state": "missing", "reason": "尚未签认" },
+    { "kind": "sm", "kindLabel": "舞监可执行签认", "state": "missing", "reason": "尚未签认" }
+  ]
+}
+```
+
+### 3. 执行人签认就绪、舞监签认可执行
+
+同一端点按登录身份区分签认类型：执行账号签认「就绪」（仅限当下有登记权的岗位），舞监签认「可执行」。请求携带页面所见的 `versionId`、`cueRef` 与目标登记行版本 `rowVersion`（取自 `GET /api/live` 每行的 `id` 与 `rowVer`）：
+
+```bash
+# 灯光执行签认就绪（非本岗位账号签认返回 403）
+curl -b light.cookie -s -X POST http://localhost:3000/api/live/releases \
+  -H 'Content-Type: application/json' \
+  -d '{"versionId":1,"cueRef":4,"rowVersion":1}'
+
+# 舞监签认可执行
+curl -b sm.cookie -s -X POST http://localhost:3000/api/live/releases \
+  -H 'Content-Type: application/json' \
+  -d '{"versionId":1,"cueRef":4,"rowVersion":1}'
+```
+
+成功响应（201）：`release` 为本次签认记录（含目标与直接前置项的登记行版本），`version` 为最新现场负载（与 `GET /api/live` 同构），其中该提示项的 `release.ready` 在两类签认齐备后为 `true`：
+
+```json
+{
+  "version": {
+    "id": 1, "versionNo": 1, "isLatest": true,
+    "cues": [
+      { "code": "L2", "needsRelease": true,
+        "release": {
+          "required": true, "ready": true,
+          "operator": { "signedBy": "灯光执行", "signedAt": "2026-10-04 19:02:11", "valid": true, "invalidReason": null },
+          "sm": { "signedBy": "舞监", "signedAt": "2026-10-04 19:02:40", "valid": true, "invalidReason": null },
+          "records": [
+            { "kind": "operator", "kindLabel": "执行人·就绪", "signedBy": "灯光执行",
+              "signedAt": "2026-10-04 19:02:11", "targetRowVer": 1, "predRowVers": { "2": 1 },
+              "valid": true, "invalidReason": null },
+            { "kind": "sm", "kindLabel": "舞监·可执行", "signedBy": "舞监",
+              "signedAt": "2026-10-04 19:02:40", "targetRowVer": 1, "predRowVers": { "2": 1 },
+              "valid": true, "invalidReason": null }
+          ]
+        } }
+    ]
+  },
+  "release": { "id": 2, "cueRef": 4, "kind": "sm", "kindLabel": "舞监·可执行",
+               "signedBy": "舞监", "signedAt": "2026-10-04 19:02:40",
+               "targetRowVer": 1, "predRowVers": { "2": 1 } }
+}
+```
+
+- `predRowVers`：签认时**直接前置项**的登记行版本（上例 `{"2":1}` 表示 S1 当时为 v1；无直接前置时为 `{}`）；
+- 同一提示项同一类可多次签认（如失效后重签），`records` 保留全部记录，每类展示最新有效签认。
+
+### 4. 两类齐备后登记开始
+
+```bash
+curl -b light.cookie -s -X POST http://localhost:3000/api/registrations \
+  -H 'Content-Type: application/json' \
+  -d '{"versionId":1,"cueRef":4,"rowVersion":1,"action":"start","time":"19:10"}'
+# 登记成功，返回最新现场负载；预计结束 / 完成登记与未标记项完全相同，不需签认
+```
+
+### 5. 签认失效：目标或直接前置项的登记行变化
+
+签认后若对 `L2` 本身（如登记预计结束、舞监更正）或其直接前置 `S1` 有任何登记/更正（行版本推进），旧签认即失效；`GET /api/live` 中该提示项 `release.operator/sm.valid=false` 并给出 `invalidReason`，开始登记被 409 拒绝：
+
+```json
+HTTP 409
+{
+  "error": "RELEASE_MISSING",
+  "message": "「L2」需双人放行：执行人就绪签认已失效、舞监可执行签认已失效，两类有效签认齐备前不能登记实际开始",
+  "items": [
+    { "kind": "operator", "kindLabel": "执行人就绪签认", "state": "invalid",
+      "reason": "已失效：直接前置项「S1」登记行已变化（签认时 v1，当前 v2）" },
+    { "kind": "sm", "kindLabel": "舞监可执行签认", "state": "invalid",
+      "reason": "已失效：直接前置项「S1」登记行已变化（签认时 v1，当前 v2）" }
+  ]
+}
+```
+
+按当前行版本重新签认（两类）后即可登记开始。
+
+### 6. 签认失效：代班变更
+
+```bash
+# 灯光执行已签认 L2 就绪；舞监启用「灯光 → 音响执行」代班
+curl -b sm.cookie -s -X POST http://localhost:3000/api/live/deputies \
+  -H 'Content-Type: application/json' -d '{"position":"灯光","username":"sound","versionId":1}'
+
+# 此后：灯光执行的签认失效（invalidReason 为「签认人 灯光执行 已失去岗位「灯光」的登记权（代班变更）…」），
+# 其本人再签认返回 403 DEPUTY_ACTIVE；代班账号 sound 可签认就绪：
+curl -c sound.cookie -s -X POST http://localhost:3000/api/login \
+  -H 'Content-Type: application/json' -d '{"username":"sound","password":"sound123"}'
+curl -b sound.cookie -s -X POST http://localhost:3000/api/live/releases \
+  -H 'Content-Type: application/json' -d '{"versionId":1,"cueRef":4,"rowVersion":1}'
+
+# 撤销代班后：sound 的签认失效，灯光执行恢复登记权，其此前未被覆盖的有效签认随之恢复有效
+curl -b sm.cookie -s -X POST http://localhost:3000/api/live/deputies/revoke \
+  -H 'Content-Type: application/json' -d '{"position":"灯光","versionId":1}'
+```
+
+### 7. 版本边界与历史回看
+
+- 发布新版后，新版 `release.records` 为空（**不继承签认**），需按新版行版本重新签认；
+- 发布交接带入的已完成项（同时具备实际开始与实际完成）**不追补签认**，直接以已完成状态进入新版；
+- 历史版本通过 `GET /api/versions/:id` 只读回看：每行 `needsRelease` 与 `release.records`（签认人、时间、目标与直接前置项登记行版本、有效性及失效原因）保持该版本归档时的判定结果。
+
+### 8. 错误一览（均明确拒绝，不写入部分结果）
+
+| 场景 | 状态码 | error |
+| --- | --- | --- |
+| 未登录 / 非舞监非执行账号 | 401 / 403 | `UNAUTHORIZED` / `FORBIDDEN` |
+| 执行人为无登记权岗位签认（含被代班顶替） | 403 | `FORBIDDEN` / `DEPUTY_ACTIVE` |
+| 版本不存在 / 提示项不在该版本 | 404 | `NOT_FOUND` |
+| 版本已归档（非当前执行版） | 409 | `VERSION_ARCHIVED` |
+| 提示项未标记「需放行」 | 400 | `RELEASE_NOT_REQUIRED` |
+| 已开始 / 已完成时签认 | 400 | `BAD_STATE` |
+| 已跳过项签认 | 409 | `CUE_SKIPPED` |
+| 签认提交的行版本过期 | 409 | `VERSION_CONFLICT`（附 `currentRowVersion`） |
+| 开始登记时缺签或签认失效 | 409 | `RELEASE_MISSING`（`items` 逐项给出缺失/失效原因） |
+

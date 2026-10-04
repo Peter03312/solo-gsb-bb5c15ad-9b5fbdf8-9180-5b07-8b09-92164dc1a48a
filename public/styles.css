@@ -178,3 +178,16 @@ tr.wi-assumed-row td { border-left: 3px solid #2f6fed; }
 .wi-removed-box ul { margin: 6px 0 0; padding-left: 18px; }
 .wi-kept-box { background: #fdf3e7; border: 1px solid #f0cf9f; color: #8a5a00; border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
 .wi-kept-box ul { margin: 6px 0 0; padding-left: 18px; }
+
+/* 双人放行（需放行提示项的签认） */
+.release-flag-line { flex-direction: row !important; align-items: center; gap: 6px !important; font-size: 13px !important; color: #334 !important; }
+.rel-flag-tag { display: inline-block; margin-top: 2px; font-size: 11px; color: #8a5a00; background: #fdf3e7; border: 1px solid #f0cf9f; border-radius: 6px; padding: 0 6px; white-space: nowrap; }
+.release-cell { display: flex; flex-direction: column; gap: 3px; font-size: 12px; white-space: normal; min-width: 180px; }
+.rel-line { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.rel-kind { color: #556; font-weight: 600; }
+.rel-none { color: #9aa3af; }
+.rel-ok { color: #1d7a43; font-weight: 600; }
+.rel-bad { color: #c0392b; font-weight: 600; }
+.rel-reason { color: #a33224; font-size: 11px; white-space: normal; }
+.rel-ready { color: #1d7a43; font-size: 11px; }
+.rel-pending { color: #9a6200; font-size: 11px; }

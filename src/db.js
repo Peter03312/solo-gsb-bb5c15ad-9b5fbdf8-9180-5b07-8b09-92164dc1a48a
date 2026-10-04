@@ -121,6 +121,22 @@ CREATE TABLE IF NOT EXISTS registration_corrections (
   corrected_at   TEXT NOT NULL
 );
 
+-- 双人放行签认：需放行提示项在开始登记前，须「执行人就绪 + 舞监可执行」两类有效签认齐备。
+-- 每次签认记录操作者、时间、目标与直接前置项的登记行版本；失效判定为动态计算：
+-- 目标或任一直接前置项登记行版本变化、或签认人失去该岗位登记权（代班变更）即失效。
+CREATE TABLE IF NOT EXISTS release_signoffs (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_id     INTEGER NOT NULL REFERENCES rehearsal_versions(id) ON DELETE CASCADE,
+  cue_ref        INTEGER NOT NULL,          -- 需放行提示项引用
+  kind           TEXT NOT NULL CHECK (kind IN ('operator', 'sm')),  -- operator=执行人就绪, sm=舞监可执行
+  signed_by_id   INTEGER NOT NULL REFERENCES users(id),
+  signed_by      TEXT NOT NULL,             -- 操作者显示名（冗余保存，账号后续变化不影响历史展示）
+  signed_at      TEXT NOT NULL,
+  target_row_ver INTEGER NOT NULL,          -- 签认时目标提示项的登记行版本
+  pred_row_vers  TEXT NOT NULL DEFAULT '{}',-- JSON：{前置cueRef: 签认时登记行版本}（直接前置项）
+  position       TEXT NOT NULL              -- 签认时提示项岗位（随版本冻结，冗余便于展示与失效判定）
+);
+
 -- 岗位代班：现场临时换人（按版本记录，启用/撤销均留痕，旧版只读可查）
 CREATE TABLE IF NOT EXISTS position_deputies (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,6 +157,7 @@ CREATE INDEX IF NOT EXISTS idx_reg_version ON registrations(version_id);
 CREATE INDEX IF NOT EXISTS idx_corr_version ON registration_corrections(version_id);
 CREATE INDEX IF NOT EXISTS idx_deputies_version ON position_deputies(version_id);
 CREATE INDEX IF NOT EXISTS idx_skips_version ON registration_skips(version_id);
+CREATE INDEX IF NOT EXISTS idx_release_version ON release_signoffs(version_id);
 -- 每个版本每个岗位至多一名在任代班（部分唯一索引）
 CREATE UNIQUE INDEX IF NOT EXISTS idx_deputies_active
   ON position_deputies(version_id, position) WHERE active = 1;
@@ -157,6 +174,11 @@ ensureColumn('registrations', 'source_cue_ref',
   'ALTER TABLE registrations ADD COLUMN source_cue_ref INTEGER');
 ensureColumn('registrations', 'skipped',
   'ALTER TABLE registrations ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0');
+// 双人放行：草稿与已发布提示项的「需放行」标记（发布时随版本冻结）
+ensureColumn('draft_cues', 'needs_release',
+  'ALTER TABLE draft_cues ADD COLUMN needs_release INTEGER NOT NULL DEFAULT 0');
+ensureColumn('published_cues', 'needs_release',
+  'ALTER TABLE published_cues ADD COLUMN needs_release INTEGER NOT NULL DEFAULT 0');
 
 function getMeta(key, fallback = null) {
   const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(key);
